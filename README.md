@@ -99,3 +99,7 @@ only. See `examples/README.txt`.
   `FONT_SCRIPT_SUPPORT` for fonts not already listed.
 - Formatting-preserving mode assumes source text has no literal `<<`/`>>`
   sequences.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
