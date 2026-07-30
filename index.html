@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Translate &amp; Check</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <h1>Illustrator Translate &amp; Check</h1>
+
+  <fieldset>
+    <legend>LLM provider</legend>
+
+    <label for="provider">Provider</label>
+    <select id="provider">
+      <option value="ollama">Local (Ollama / Gemma 4)</option>
+      <option value="claude">Claude (Anthropic)</option>
+      <option value="openai">ChatGPT (OpenAI)</option>
+      <option value="gemini">Gemini (Google)</option>
+    </select>
+
+    <label for="apiKey" id="apiKeyLabel">API key</label>
+    <input type="password" id="apiKey" placeholder="paste your API key">
+    <div class="hint" id="apiKeyHint">Stored only in this panel's local storage on this Mac, not synced anywhere.</div>
+
+    <label for="model">Model (optional override)</label>
+    <input type="text" id="model" placeholder="leave blank for default">
+  </fieldset>
+
+  <fieldset>
+    <legend>Translation</legend>
+    <label for="targetLang">Target language</label>
+    <input type="text" id="targetLang" placeholder="e.g. German (de)">
+    <div class="hint">Default style: IEC/IEEE 82079 minimalist (short, formal, strict logic). Drop approved .txt examples in examples/&lt;code&gt;/ to match your house style per language.</div>
+
+    <label for="preserveFormatting" class="checkbox-label">
+      <input type="checkbox" id="preserveFormatting">
+      Preserve character formatting (bold/italic/etc.) through translation
+    </label>
+    <div class="hint">Extracts/reapplies exact per-run font styling (not just plain text) via Markdown-style markers, so mixed bold/regular runs within a frame survive translation unchanged.</div>
+
+    <div class="row">
+      <button id="btnExtract">1. Extract text</button>
+      <button id="btnTranslate" disabled>2. Translate</button>
+    </div>
+    <div class="row">
+      <button id="btnApply" disabled class="secondary">3. Apply to document</button>
+      <button id="btnCheck" disabled class="secondary">4. Run checks</button>
+    </div>
+  </fieldset>
+
+  <div id="log"></div>
+
+  <script src="js/CSInterface.js"></script>
+  <script src="js/providers.js"></script>
+  <script src="js/checks.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
