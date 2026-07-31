@@ -22,8 +22,13 @@ function clearLog() {
 const fs = require("fs");
 const path = require("path");
 
+// getSystemPath() returns a file:// URI. On Windows that's "file:///C:/Users/..."
+// — stripping just "file://" leaves a leading slash before the drive letter
+// ("/C:/Users/...", not a valid Windows path) — so that case is stripped too.
 function getExtensionRoot() {
-  return cs.getSystemPath(SystemPath.EXTENSION).replace(/^file:\/\//, "");
+  var p = cs.getSystemPath(SystemPath.EXTENSION).replace(/^file:\/\//, "");
+  if (/^\/[a-zA-Z]:\//.test(p)) p = p.substring(1);
+  return p;
 }
 
 // "German (de)" -> "de", "German" -> "german" — matches examples/<code>/ folder names.
@@ -119,7 +124,10 @@ btnExtract.addEventListener("click", async () => {
     // Normalize to a common {id, kind, contents, ...} shape regardless of mode,
     // so the translate step below can stay agnostic to which one ran.
     state.originals = preserveFormatting
-      ? res.frames.map(f => ({ id: f.id, kind: f.kind, contents: f.markdown, legend: f.legend, baseFingerprint: f.baseFingerprint }))
+      ? res.frames.map(f => ({
+          id: f.id, kind: f.kind, contents: f.markdown, legend: f.legend, baseFingerprint: f.baseFingerprint,
+          rangeStart: f.rangeStart, rangeEnd: f.rangeEnd, prefixRuns: f.prefixRuns, suffixRuns: f.suffixRuns
+        }))
       : res.frames;
     state.translated = [];
     if (res.usedSelection) {
@@ -205,7 +213,9 @@ btnTranslate.addEventListener("click", async () => {
 
     state.translated = state.originals.map(f => ({
       id: f.id,
-      contents: byId[f.id] !== undefined ? byId[f.id] : f.contents
+      contents: byId[f.id] !== undefined ? byId[f.id] : f.contents,
+      rangeStart: f.rangeStart,
+      rangeEnd: f.rangeEnd
     }));
 
     log("Translation preview:", "ok");
@@ -237,7 +247,9 @@ btnApply.addEventListener("click", async () => {
         id: t.id,
         markdown: t.contents,
         legend: originalById[t.id] && originalById[t.id].legend,
-        baseFingerprint: originalById[t.id] && originalById[t.id].baseFingerprint
+        baseFingerprint: originalById[t.id] && originalById[t.id].baseFingerprint,
+        prefixRuns: originalById[t.id] && originalById[t.id].prefixRuns,
+        suffixRuns: originalById[t.id] && originalById[t.id].suffixRuns
       }));
     } else {
       payload = state.translated;

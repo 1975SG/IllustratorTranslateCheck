@@ -18,11 +18,67 @@ function ensureDocument() {
 // the frame's index within doc.textFrames (not the selection) — applyTranslations()
 // and checkOverset() re-index that same full collection, so the document must
 // not gain/lose/reorder text frames between calls.
-function isFrameInSelection(tf, selection) {
+
+// Tells whether/how a frame participates in the current selection:
+//   null                    -> frame not part of the selection at all
+//   { start: 0, end: null } -> frame is selected as a whole (Selection tool
+//                              click on the frame itself, or Cmd+A with the
+//                              Type tool active)
+//   { start, end }          -> a dragged Type-tool selection covering only
+//                              part of the frame's text (end is exclusive).
+// doc.selection can contain TextRange items (dragged text — these carry real
+// .start/.end, story-relative, so frameStart is subtracted back out to make
+// them frame-relative) mixed with PageItem items (whole frames picked with
+// the Selection tool). A TextRange match always wins over a coarser
+// tf.selected/PageItem match when both are present, since it's the more
+// precise signal — tf.selected alone can't be trusted to mean "whole frame"
+// because Illustrator also flags the frame selected while text inside it is
+// being partially selected with the Type tool.
+function getFrameSelectionRange(tf, selection) {
+    var frameStart = 0, frameLen = 0;
+    try { frameStart = tf.textRange.start; } catch (e) {}
+    try { frameLen = tf.textRange.characters.length; } catch (e) {}
+
+    var textStart = null, textEnd = null;
+    var wholeFrameSelected = false;
+
     for (var s = 0; s < selection.length; s++) {
-        if (selection[s] === tf) return true;
+        var item = selection[s];
+        if (item === tf) { wholeFrameSelected = true; continue; }
+
+        // Every property read below is on a live ExtendScript bridge object,
+        // not a plain JS object — reading a property a given selection-item
+        // type doesn't actually support (e.g. .start/.end on a PathItem, or
+        // .story on something that isn't text at all) can throw instead of
+        // quietly returning undefined, so each one gets its own try/catch
+        // rather than relying on a bare "typeof item.start" to fail safely.
+        var itemStart = null;
+        try { itemStart = item.start; } catch (e) { itemStart = null; }
+        var itemEnd = null;
+        try { itemEnd = item.end; } catch (e) { itemEnd = null; }
+        if (typeof itemStart !== "number" || typeof itemEnd !== "number") continue;
+
+        var itemStory = null;
+        try { itemStory = item.story; } catch (e) { itemStory = null; }
+        var tfStory = null;
+        try { tfStory = tf.story; } catch (e) { tfStory = null; }
+        if (!itemStory || !tfStory || itemStory !== tfStory) continue;
+
+        var s0 = Math.max(0, itemStart - frameStart);
+        var e0 = Math.min(frameLen, itemEnd - frameStart);
+        if (e0 <= s0) continue;
+        if (textStart === null || s0 < textStart) textStart = s0;
+        if (textEnd === null || e0 > textEnd) textEnd = e0;
     }
-    return false;
+
+    if (textStart !== null) {
+        if (textStart <= 0 && textEnd >= frameLen) return { start: 0, end: null };
+        return { start: textStart, end: textEnd };
+    }
+    var isSelected = false;
+    try { isSelected = tf.selected; } catch (e) { isSelected = false; }
+    if (wholeFrameSelected || isSelected) return { start: 0, end: null };
+    return null;
 }
 
 function extractTextFrames() {
@@ -35,7 +91,15 @@ function extractTextFrames() {
         for (var i = 0; i < frames.length; i++) {
             var tf = frames[i];
             if (tf.locked || tf.hidden) continue;
-            if (useSelection && !(tf.selected || isFrameInSelection(tf, selection))) continue;
+            var range = null;
+            if (useSelection) {
+                range = getFrameSelectionRange(tf, selection);
+                if (range === null) continue;
+            }
+            var isPartial = !!(range && range.end !== null);
+            var full = tf.contents;
+            var contents = isPartial ? full.substring(range.start, range.end) : full;
+            if (isPartial && contents === "") continue;
             var fontFamily = "";
             try {
                 if (tf.textRange && tf.textRange.characters.length > 0) {
@@ -44,9 +108,11 @@ function extractTextFrames() {
             } catch (e) {}
             out.push({
                 id: i,
-                kind: tf.kind.toString(),
-                contents: tf.contents,
-                fontFamily: fontFamily
+                kind: tf.kind.toString() + (isPartial ? " (selection)" : ""),
+                contents: contents,
+                fontFamily: fontFamily,
+                rangeStart: isPartial ? range.start : null,
+                rangeEnd: isPartial ? range.end : null
             });
         }
         return JSON.stringify({ ok: true, frames: out, usedSelection: useSelection, totalInDoc: frames.length });
@@ -55,8 +121,17 @@ function extractTextFrames() {
     }
 }
 
-// payload: JSON string of [{id, contents}, ...]
-// Only .contents is written — position, size, transform, and font are untouched.
+// payload: JSON string of [{id, contents, rangeStart, rangeEnd}, ...].
+// When rangeStart/rangeEnd are present (a partial Type-tool selection at
+// extraction time), only that slice of the frame's plain text is replaced —
+// computed by splicing translated text into a fresh read of the frame's
+// current full string, then writing the WHOLE string back, since Illustrator
+// has no documented way to assign .contents to an arbitrary sub-range object.
+// That means this — like whole-frame replacement below — does not guarantee
+// per-character formatting survives on the untouched prefix/suffix; if that
+// matters, use "Preserve character formatting" (applyTranslationsMD, which
+// explicitly re-stripes prefix/selected/suffix from captured fingerprints).
+// Frame position, size, and transform are untouched either way.
 function applyTranslations(payload) {
     try {
         var doc = ensureDocument();
@@ -72,7 +147,15 @@ function applyTranslations(payload) {
                 continue;
             }
             try {
-                frames[idx].contents = item.contents;
+                var tf = frames[idx];
+                if (typeof item.rangeStart === "number" && typeof item.rangeEnd === "number") {
+                    var full = tf.contents;
+                    var endIdx = Math.min(item.rangeEnd, full.length);
+                    var startIdx = Math.min(item.rangeStart, endIdx);
+                    tf.contents = full.substring(0, startIdx) + item.contents + full.substring(endIdx);
+                } else {
+                    tf.contents = item.contents;
+                }
                 applied.push(idx);
             } catch (e) {
                 errors.push({ id: idx, error: e.toString() });
@@ -205,6 +288,35 @@ function buildLegendAndMarkdown(runs, baseKey) {
     return { markdown: md, legend: legend };
 }
 
+// Splits an ordered run list (as produced by getRuns, covering a whole
+// frame's text end to end) into the portion before [start,end), the portion
+// inside it, and the portion after — cutting individual runs in two where the
+// boundary falls mid-run. "selected" keeps .key (needed by
+// buildLegendAndMarkdown); prefix/suffix only need .fp/.text since they're
+// never turned into markdown, just re-striped verbatim on apply.
+function splitRunsByRange(runs, start, end) {
+    var prefix = [], selected = [], suffix = [];
+    var pos = 0;
+    for (var i = 0; i < runs.length; i++) {
+        var r = runs[i];
+        var rStart = pos, rEnd = pos + r.text.length;
+        pos = rEnd;
+        if (rStart < start) {
+            var pEnd = Math.min(rEnd, start);
+            prefix.push({ fp: r.fp, text: r.text.substring(0, pEnd - rStart) });
+        }
+        var selStart = Math.max(rStart, start), selEnd = Math.min(rEnd, end);
+        if (selStart < selEnd) {
+            selected.push({ fp: r.fp, key: r.key, text: r.text.substring(selStart - rStart, selEnd - rStart) });
+        }
+        if (rEnd > end) {
+            var sStart = Math.max(rStart, end);
+            suffix.push({ fp: r.fp, text: r.text.substring(sStart - rStart) });
+        }
+    }
+    return { prefix: prefix, selected: selected, suffix: suffix };
+}
+
 function extractTextFramesMD() {
     try {
         var doc = ensureDocument();
@@ -215,10 +327,19 @@ function extractTextFramesMD() {
         for (var i = 0; i < frames.length; i++) {
             var tf = frames[i];
             if (tf.locked || tf.hidden) continue;
-            if (useSelection && !(tf.selected || isFrameInSelection(tf, selection))) continue;
+            var range = null;
+            if (useSelection) {
+                range = getFrameSelectionRange(tf, selection);
+                if (range === null) continue;
+            }
+            var isPartial = !!(range && range.end !== null);
+            // Fingerprint the WHOLE frame regardless of selection — needed
+            // even for a partial selection, since applyTranslationsMD has to
+            // re-stripe the untouched prefix/suffix after the frame-wide
+            // .contents write that landing the translated text requires.
             var runs = getRuns(tf);
             if (runs.length === 0) {
-                out.push({ id: i, kind: tf.kind.toString(), markdown: "", legend: {}, baseFingerprint: null });
+                if (!isPartial) out.push({ id: i, kind: tf.kind.toString(), markdown: "", legend: {}, baseFingerprint: null });
                 continue;
             }
             var baseKey = computeBaseKey(runs);
@@ -226,13 +347,30 @@ function extractTextFramesMD() {
             for (var r = 0; r < runs.length; r++) {
                 if (runs[r].key === baseKey) { baseFp = runs[r].fp; break; }
             }
-            var built = buildLegendAndMarkdown(runs, baseKey);
+            if (!isPartial) {
+                var built = buildLegendAndMarkdown(runs, baseKey);
+                out.push({
+                    id: i,
+                    kind: tf.kind.toString(),
+                    markdown: built.markdown,
+                    legend: built.legend,
+                    baseFingerprint: baseFp
+                });
+                continue;
+            }
+            var split = splitRunsByRange(runs, range.start, range.end);
+            if (split.selected.length === 0) continue;
+            var selBuilt = buildLegendAndMarkdown(split.selected, baseKey);
             out.push({
                 id: i,
-                kind: tf.kind.toString(),
-                markdown: built.markdown,
-                legend: built.legend,
-                baseFingerprint: baseFp
+                kind: tf.kind.toString() + " (selection)",
+                markdown: selBuilt.markdown,
+                legend: selBuilt.legend,
+                baseFingerprint: baseFp,
+                rangeStart: range.start,
+                rangeEnd: range.end,
+                prefixRuns: split.prefix,
+                suffixRuns: split.suffix
             });
         }
         return JSON.stringify({ ok: true, frames: out, usedSelection: useSelection, totalInDoc: frames.length });
@@ -343,11 +481,39 @@ function applyFingerprintToRange(tf, startIdx, endIdx, fp) {
     }
 }
 
+function runsToText(runs) {
+    var t = "";
+    if (!runs) return t;
+    for (var i = 0; i < runs.length; i++) t += runs[i].text;
+    return t;
+}
+
+// Re-applies a captured prefix/suffix run list starting at a given character
+// offset in the (already rewritten) frame — walks the runs in order, advancing
+// the offset by each run's own text length as it goes.
+function applyRunsToRange(tf, offset, runs) {
+    if (!runs) return;
+    var pos = offset;
+    for (var i = 0; i < runs.length; i++) {
+        var len = runs[i].text.length;
+        if (len > 0) applyFingerprintToRange(tf, pos, pos + len, runs[i].fp);
+        pos += len;
+    }
+}
+
 // payload: JSON string of [{id, markdown, legend, baseFingerprint}, ...] as
 // produced by extractTextFramesMD (markdown/legend/baseFingerprint carried
-// through translation unchanged except for the text inside markers/base runs).
-// Only .contents and character-level styling are written — position, size,
-// and transform of the frame itself are untouched.
+// through translation unchanged except for the text inside markers/base
+// runs), plus optionally {rangeStart, rangeEnd, prefixRuns, suffixRuns} when
+// extraction was scoped to a partial Type-tool selection. In that case the
+// whole frame still has to be reassembled and rewritten in one .contents
+// write (prefixText + translated selection + suffixText), because Illustrator
+// has no documented way to assign .contents to an arbitrary sub-range — but
+// prefixRuns/suffixRuns (captured BEFORE translation, never touched by the
+// LLM) are re-striped onto the rebuilt string afterward, so the untouched
+// parts of the frame come back with their exact original per-run formatting
+// rather than collapsing to one style like a plain-mode apply would. Frame
+// position, size, and transform are untouched.
 function applyTranslationsMD(payload) {
     try {
         var doc = ensureDocument();
@@ -365,22 +531,41 @@ function applyTranslationsMD(payload) {
             try {
                 var tf = frames[idx];
                 var segments = parseMarkdown(item.markdown || "");
-                var plainText = "";
+                var selectedText = "";
                 var spans = [];
                 for (var s = 0; s < segments.length; s++) {
-                    var start = plainText.length;
-                    plainText += segments[s].text;
+                    var start = selectedText.length;
+                    selectedText += segments[s].text;
                     if (segments[s].marker) {
-                        spans.push({ marker: segments[s].marker, start: start, end: plainText.length });
+                        spans.push({ marker: segments[s].marker, start: start, end: selectedText.length });
                     }
                 }
+
+                var isPartial = !!(item.prefixRuns || item.suffixRuns);
+                var prefixText = isPartial ? runsToText(item.prefixRuns) : "";
+                var suffixText = isPartial ? runsToText(item.suffixRuns) : "";
+                var plainText = prefixText + selectedText + suffixText;
+
                 tf.contents = plainText;
-                if (item.baseFingerprint) {
-                    applyFingerprintToRange(tf, 0, plainText.length, item.baseFingerprint);
-                }
-                for (var sp = 0; sp < spans.length; sp++) {
-                    var fp = item.legend ? item.legend[spans[sp].marker] : null;
-                    if (fp) applyFingerprintToRange(tf, spans[sp].start, spans[sp].end, fp);
+
+                if (isPartial) {
+                    applyRunsToRange(tf, 0, item.prefixRuns);
+                    if (item.baseFingerprint) {
+                        applyFingerprintToRange(tf, prefixText.length, prefixText.length + selectedText.length, item.baseFingerprint);
+                    }
+                    for (var sp = 0; sp < spans.length; sp++) {
+                        var fp = item.legend ? item.legend[spans[sp].marker] : null;
+                        if (fp) applyFingerprintToRange(tf, prefixText.length + spans[sp].start, prefixText.length + spans[sp].end, fp);
+                    }
+                    applyRunsToRange(tf, prefixText.length + selectedText.length, item.suffixRuns);
+                } else {
+                    if (item.baseFingerprint) {
+                        applyFingerprintToRange(tf, 0, plainText.length, item.baseFingerprint);
+                    }
+                    for (var sp2 = 0; sp2 < spans.length; sp2++) {
+                        var fp2 = item.legend ? item.legend[spans[sp2].marker] : null;
+                        if (fp2) applyFingerprintToRange(tf, spans[sp2].start, spans[sp2].end, fp2);
+                    }
                 }
                 applied.push(idx);
             } catch (e) {

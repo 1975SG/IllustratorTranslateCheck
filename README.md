@@ -1,4 +1,4 @@
-# Illustrator Translate & Check
+# Illustrator Translate & Check (macOS)
 
 CEP panel for Adobe Illustrator that extracts text frames from a document,
 sends them to an LLM for translation, writes the result back into the same
@@ -9,61 +9,41 @@ Panel-side JS drives the UI and calls the LLM provider directly over
 `fetch`; an ExtendScript host (`jsx/host.jsx`) does the actual document
 read/write inside Illustrator's scripting engine.
 
+## Screenshot
+
+![Panel UI, Ollama provider, Dutch target](screenshots/panel.png)
+
 ## Status
 
-- Extract text frames (current selection, or whole document if nothing is
-  selected)
+- Extract text frames — current selection (whole frames, or just a
+  Type-tool-dragged range within one), or the whole document if nothing is
+  selected
 - Translate via one of four providers: local Ollama, Claude, ChatGPT, Gemini
 - Optional formatting-preserving mode — captures per-run font/size/color/
   underline/tracking as inline markers so mixed bold/regular text survives
-  translation unchanged
-- Apply translated text back to the original frames
+  translation unchanged, including on the untouched prefix/suffix of a
+  partial-selection edit
+- Apply translated text back to the original frames (or just the selected
+  sub-range)
 - Per-language style examples (`examples/<lang-code>/*.txt`) fed to the LLM
   as house-style reference
 - Checks: overset text frames, untranslated leftovers, font/script glyph
   support (heuristic registry, not real font introspection)
 
-Full architecture and module docs live in [`docs/`](docs/) — start at
-[`docs/00_Project_Vision.md`](docs/00_Project_Vision.md).
-
 ## Install
 
-Tested on Apple Silicon Macs (M4 Pro, M4) with Illustrator 2024/2025+ (CEP 9,
-`ILST` host version 25+).
+**Read [`SECURITY.md`](SECURITY.md) first** — installing this enables
+Adobe's `PlayerDebugMode`, which is not scoped to just this extension.
 
-1. **Copy the extension into Illustrator's CEP extensions folder:**
-
-   ```sh
-   mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
-   cp -R /path/to/IllustratorTranslateCheck \
-     ~/Library/Application\ Support/Adobe/CEP/extensions/com.sgozel.translatecheck
-   ```
-
-2. **Enable CEP debug mode** so Illustrator loads this unsigned extension
-   (it isn't packaged as a signed `.zxp`):
-
-   ```sh
-   defaults write com.adobe.CSXS.9 PlayerDebugMode 1
-   defaults write com.adobe.CSXS.10 PlayerDebugMode 1
-   defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-   ```
-
-   Run all three — different Illustrator releases check different `CSXS.N`
-   domains, and setting an unused one is harmless.
-
-3. **Restart Illustrator.**
-
-4. Open the panel from **Window → Extensions → Translate & Check**.
-
-If it doesn't appear: quit Illustrator fully (not just close the document),
-confirm the folder name under `CEP/extensions/` contains `CSXS/manifest.xml`
-directly (no extra nesting), then relaunch.
+Run [`./install-mac.sh`](install-mac.sh) (prints the same warning and asks
+for confirmation before changing anything), or follow the manual steps in
+[`install-mac.md`](install-mac.md).
 
 ## Usage
 
 1. Select a target language (e.g. `German (de)`) and, if using a hosted
    provider, paste an API key — stored only in the panel's local storage on
-   that machine.
+   this Mac.
 2. **1. Extract text** — pulls text frames from the current selection, or
    the whole document if nothing is selected.
 3. **2. Translate** — batches frames to the chosen provider (chunked by
@@ -89,6 +69,9 @@ present: `en`, `de`, `fr`, `cs`, `pl`, `nl`) to steer tone/terminology per
 language. Empty or missing folder = default IEC/IEEE 82079 minimalist style
 only. See `examples/README.txt`.
 
+For how the prompt itself is built (and how to change it), see
+[`CUSTOMIZATION.md`](CUSTOMIZATION.md).
+
 ## Limitations
 
 - Text-frame `id`s are index positions into `doc.textFrames` — the document
@@ -99,6 +82,11 @@ only. See `examples/README.txt`.
   `FONT_SCRIPT_SUPPORT` for fonts not already listed.
 - Formatting-preserving mode assumes source text has no literal `<<`/`>>`
   sequences.
+- Illustrator's scripting API has no documented way to assign `.contents`
+  to an arbitrary sub-range of a text frame, so a partial-selection edit is
+  applied by rewriting the whole frame's text and re-striping the
+  untouched prefix/suffix from captured formatting runs — this preserves
+  the visible result but isn't a true in-place partial write.
 
 ## License
 
